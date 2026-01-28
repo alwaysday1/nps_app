@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NPS数据分析系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div x-data="npsApp()" x-cloak class="max-w-7xl mx-auto px-4 py-6">
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-bold text-gray-800">NPS数据分析系统</h1>
+            <div class="flex items-center gap-4">
+                <label class="text-sm text-gray-600">NPS目标值:</label>
+                <input type="number" x-model="npsTarget" @change="updateTarget()" 
+                       class="w-20 px-2 py-1 border rounded text-center" min="0" max="100">
+            </div>
+        </div>
+
+        <!-- 上传区域 -->
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-400 transition-colors"
+                 @dragover.prevent="dragover = true" @dragleave="dragover = false"
+                 @drop.prevent="handleDrop($event)" :class="{'border-blue-400 bg-blue-50': dragover}">
+                <input type="file" id="fileInput" accept=".xlsx,.xls" @change="handleFileSelect($event)" class="hidden">
+                <label for="fileInput" class="cursor-pointer">
+                    <div class="text-gray-500">
+                        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                        </svg>
+                        <p class="mt-2 text-sm">拖拽Excel文件到此处，或 <span class="text-blue-500">点击选择文件</span></p>
+                        <p class="mt-1 text-xs text-gray-400">支持 .xlsx, .xls 格式</p>
+                    </div>
+                </label>
+            </div>
+            
+            <!-- 上传状态 -->
+            <div x-show="uploading" class="mt-4 text-center text-blue-600">
+                <svg class="animate-spin h-5 w-5 mx-auto" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <p class="mt-2">正在分析数据...</p>
+            </div>
+            
+            <div x-show="message" class="mt-4 p-3 rounded" :class="success ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'">
+                <span x-text="message"></span>
+            </div>
+        </div>
+
+        <!-- 数据展示区域 -->
+        <template x-if="dataLoaded">
+            <div>
+                <!-- 整体NPS指标 -->
+                <div class="bg-white rounded-lg shadow p-6 mb-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm text-gray-500">整体NPS</p>
+                            <p class="text-3xl font-bold" :class="overallNps >= npsTarget ? 'text-green-600' : 'text-red-600'" x-text="overallNps"></p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm text-gray-500">供应商数量</p>
+                            <p class="text-2xl font-semibold text-gray-700" x-text="suppliers.length"></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab切换 -->
+                <div class="bg-white rounded-lg shadow">
+                    <div class="border-b flex">
+                        <button @click="activeTab = 'overall'" 
+                                class="px-6 py-3 text-sm font-medium" 
+                                :class="activeTab === 'overall' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'">
+                            总体分析
+                        </button>
+                        <button @click="activeTab = 'supplier'" 
+                                class="px-6 py-3 text-sm font-medium"
+                                :class="activeTab === 'supplier' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'">
+                            单供应商分析
+                        </button>
+                    </div>
+
+                    <!-- 总体分析Tab -->
+                    <div x-show="activeTab === 'overall'" class="p-6">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-lg font-semibold">所有供应商NPS排名</h2>
+                            <div class="flex gap-2">
+                                <a href="/download/overall" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">
+                                    下载CSV
+                                </a>
+                                <a href="/download/all" class="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm">
+                                    下载全部ZIP
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead class="bg-gray-50">
+                                    <tr>
+                                        <th class="px-4 py-3 text-left">排名</th>
+                                        <th class="px-4 py-3 text-left">供应商</th>
+                                        <th class="px-4 py-3 text-right">订单数</th>
+                                        <th class="px-4 py-3 text-right">有效分母</th>
+                                        <th class="px-4 py-3 text-right">诋毁数</th>
+                                        <th class="px-4 py-3 text-right">推荐分</th>
+                                        <th class="px-4 py-3 text-right">NPS</th>
+                                        <th class="px-4 py-3 text-center">状态</th>
+                                        <th class="px-4 py-3 text-center">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y">
+                                    <template x-for="item in overallData" :key="item['供应商ID']">
+                                        <tr :class="{
+                                            'bg-red-50': item['未达目标'] === '是',
+                                            'bg-orange-50': item['负贡献'] === '是' && item['未达目标'] !== '是'
+                                        }">
+                                            <td class="px-4 py-3" x-text="item['排名']"></td>
+                                            <td class="px-4 py-3">
+                                                <span x-text="item['供应商名称']" class="truncate block max-w-xs" :title="item['供应商名称']"></span>
+                                            </td>
+                                            <td class="px-4 py-3 text-right" x-text="item['订单数']"></td>
+                                            <td class="px-4 py-3 text-right" x-text="item['有效分母']"></td>
+                                            <td class="px-4 py-3 text-right" x-text="item['诋毁数']"></td>
+                                            <td class="px-4 py-3 text-right" x-text="item['推荐分']"></td>
+                                            <td class="px-4 py-3 text-right font-semibold" 
+                                                :class="item['NPS'] >= npsTarget ? 'text-green-600' : 'text-red-600'"
+                                                x-text="item['NPS']"></td>
+                                            <td class="px-4 py-3 text-center">
+                                                <span x-show="item['未达目标'] === '是'" class="px-2 py-1 bg-red-100 text-red-700 rounded text-xs">未达标</span>
+                                                <span x-show="item['负贡献'] === '是'" class="px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs ml-1">负贡献</span>
+                                                <span x-show="item['未达目标'] !== '是' && item['负贡献'] !== '是'" class="text-green-500">✓</span>
+                                            </td>
+                                            <td class="px-4 py-3 text-center">
+                                                <button @click="selectSupplier(item['供应商ID'])" 
+                                                        class="text-blue-500 hover:text-blue-700 text-sm">查看详情</button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 单供应商分析Tab -->
+                    <div x-show="activeTab === 'supplier'" class="p-6">
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">选择供应商</label>
+                            <select x-model="selectedSupplier" @change="loadSupplierData()" 
+                                    class="w-full max-w-md px-3 py-2 border rounded-lg">
+                                <option value="">-- 请选择 --</option>
+                                <template x-for="s in suppliers" :key="s.id">
+                                    <option :value="s.id" x-text="`${s.name} (${s.count}单)`"></option>
+                                </template>
+                            </select>
+                        </div>
+
+                        <template x-if="selectedSupplier && supplierData">
+                            <div>
+                                <!-- 子Tab -->
+                                <div class="border-b flex mb-4">
+                                    <button @click="supplierTab = 'followup'" 
+                                            class="px-4 py-2 text-sm"
+                                            :class="supplierTab === 'followup' ? 'tab-active' : 'text-gray-500'">
+                                        追评管理
+                                    </button>
+                                    <button @click="supplierTab = 'date'" 
+                                            class="px-4 py-2 text-sm"
+                                            :class="supplierTab === 'date' ? 'tab-active' : 'text-gray-500'">
+                                        日期维度
+                                    </button>
+                                    <button @click="supplierTab = 'account'" 
+                                            class="px-4 py-2 text-sm"
+                                            :class="supplierTab === 'account' ? 'tab-active' : 'text-gray-500'">
+                                        账号维度
+                                    </button>
+                                    <button @click="supplierTab = 'follower'" 
+                                            class="px-4 py-2 text-sm"
+                                            :class="supplierTab === 'follower' ? 'tab-active' : 'text-gray-500'">
+                                        跟进人维度
+                                    </button>
+                                </div>
+
+                                <!-- 追评管理表 -->
+                                <div x-show="supplierTab === 'followup'">
+                                    <div class="flex justify-between items-center mb-4">
+                                        <h3 class="font-medium">追评管理表</h3>
+                                        <a :href="`/download/supplier/${selectedSupplier}/followup`" 
+                                           class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600">下载CSV</a>
+                                    </div>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-gray-50">
+                                                <tr>
+                                                    <th class="px-4 py-2 text-left">订单号</th>
+                                                    <th class="px-4 py-2 text-center">优先级</th>
+                                                    <th class="px-4 py-2 text-left">优先级说明</th>
+                                                    <th class="px-4 py-2 text-center">追评类型</th>
+                                                    <th class="px-4 py-2 text-right">分母V5</th>
+                                                    <th class="px-4 py-2 text-center">是否诋毁</th>
+                                                    <th class="px-4 py-2 text-center">有反馈</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y">
+                                                <template x-for="(item, idx) in supplierData.followup" :key="idx">
+                                                    <tr :class="{
+                                                        'bg-red-50': item['追评类型'] === '诋毁回正',
+                                                        'bg-yellow-50': item['追评类型'] === '追好评'
+                                                    }">
+                                                        <td class="px-4 py-2 font-mono text-xs" x-text="item['订单号']"></td>
+                                                        <td class="px-4 py-2 text-center">
+                                                            <span class="px-2 py-1 rounded text-xs"
+                                                                  :class="{
+                                                                      'bg-red-100 text-red-700': item['优先级'] === 1,
+                                                                      'bg-orange-100 text-orange-700': item['优先级'] === 2,
+                                                                      'bg-gray-100 text-gray-700': item['优先级'] === 3
+                                                                  }"
+                                                                  x-text="item['优先级']"></span>
+                                                        </td>
+                                                        <td class="px-4 py-2" x-text="item['优先级说明']"></td>
+                                                        <td class="px-4 py-2 text-center">
+                                                            <span class="px-2 py-1 rounded text-xs"
+                                                                  :class="{
+                                                                      'bg-red-100 text-red-700': item['追评类型'] === '诋毁回正',
+                                                                      'bg-yellow-100 text-yellow-700': item['追评类型'] === '追好评',
+                                                                      'bg-green-100 text-green-700': item['追评类型'] === '无需追评'
+                                                                  }"
+                                                                  x-text="item['追评类型']"></span>
+                                                        </td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['分母V5']"></td>
+                                                        <td class="px-4 py-2 text-center" x-text="item['是否诋毁']"></td>
+                                                        <td class="px-4 py-2 text-center" x-text="item['有用户反馈']"></td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <!-- 日期维度 -->
+                                <div x-show="supplierTab === 'date'">
+                                    <div class="flex justify-between items-center mb-4">
+                                        <h3 class="font-medium">日期维度分析</h3>
+                                        <a :href="`/download/supplier/${selectedSupplier}/date`" 
+                                           class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600">下载CSV</a>
+                                    </div>
+                                    <div class="mb-6 h-64">
+                                        <canvas id="dateChart"></canvas>
+                                    </div>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-gray-50">
+                                                <tr>
+                                                    <th class="px-4 py-2 text-left">日期</th>
+                                                    <th class="px-4 py-2 text-right">订单数</th>
+                                                    <th class="px-4 py-2 text-right">有效分母</th>
+                                                    <th class="px-4 py-2 text-right">诋毁数</th>
+                                                    <th class="px-4 py-2 text-right">当日NPS</th>
+                                                    <th class="px-4 py-2 text-right">累计NPS</th>
+                                                    <th class="px-4 py-2 text-center">是否进步</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y">
+                                                <template x-for="(item, idx) in supplierData.date_dimension" :key="idx">
+                                                    <tr>
+                                                        <td class="px-4 py-2" x-text="item['日期']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['订单数']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['有效分母']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['诋毁数']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['当日NPS']"></td>
+                                                        <td class="px-4 py-2 text-right font-semibold" x-text="item['累计NPS']"></td>
+                                                        <td class="px-4 py-2 text-center">
+                                                            <span :class="{
+                                                                'text-green-600': item['是否进步'] === '是',
+                                                                'text-red-600': item['是否进步'] === '否',
+                                                                'text-gray-400': item['是否进步'] === '-' || item['是否进步'] === '持平'
+                                                            }" x-text="item['是否进步']"></span>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <!-- 账号维度 -->
+                                <div x-show="supplierTab === 'account'">
+                                    <div class="flex justify-between items-center mb-4">
+                                        <h3 class="font-medium">账号维度分析</h3>
+                                        <a :href="`/download/supplier/${selectedSupplier}/account`" 
+                                           class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600">下载CSV</a>
+                                    </div>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-gray-50">
+                                                <tr>
+                                                    <th class="px-4 py-2 text-left">子账号名称</th>
+                                                    <th class="px-4 py-2 text-right">订单数</th>
+                                                    <th class="px-4 py-2 text-right">有效分母</th>
+                                                    <th class="px-4 py-2 text-right">诋毁数</th>
+                                                    <th class="px-4 py-2 text-right">推荐分</th>
+                                                    <th class="px-4 py-2 text-right">NPS</th>
+                                                    <th class="px-4 py-2 text-center">负贡献</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y">
+                                                <template x-for="(item, idx) in supplierData.account_dimension" :key="idx">
+                                                    <tr :class="{'bg-orange-50': item['负贡献'] === '是'}">
+                                                        <td class="px-4 py-2" x-text="item['子账号名称']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['订单数']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['有效分母']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['诋毁数']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['推荐分']"></td>
+                                                        <td class="px-4 py-2 text-right font-semibold" x-text="item['NPS']"></td>
+                                                        <td class="px-4 py-2 text-center">
+                                                            <span x-show="item['负贡献'] === '是'" class="px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs">负贡献</span>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <!-- 跟进人维度 -->
+                                <div x-show="supplierTab === 'follower'">
+                                    <div class="flex justify-between items-center mb-4">
+                                        <h3 class="font-medium">跟进人维度分析</h3>
+                                        <a :href="`/download/supplier/${selectedSupplier}/follower`" 
+                                           class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600">下载CSV</a>
+                                    </div>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-gray-50">
+                                                <tr>
+                                                    <th class="px-4 py-2 text-left">跟进人姓名</th>
+                                                    <th class="px-4 py-2 text-right">订单数</th>
+                                                    <th class="px-4 py-2 text-right">有效分母</th>
+                                                    <th class="px-4 py-2 text-right">诋毁数</th>
+                                                    <th class="px-4 py-2 text-right">推荐分</th>
+                                                    <th class="px-4 py-2 text-right">NPS</th>
+                                                    <th class="px-4 py-2 text-center">负贡献</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y">
+                                                <template x-for="(item, idx) in supplierData.follower_dimension" :key="idx">
+                                                    <tr :class="{'bg-orange-50': item['负贡献'] === '是'}">
+                                                        <td class="px-4 py-2" x-text="item['跟进人姓名']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['订单数']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['有效分母']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['诋毁数']"></td>
+                                                        <td class="px-4 py-2 text-right" x-text="item['推荐分']"></td>
+                                                        <td class="px-4 py-2 text-right font-semibold" x-text="item['NPS']"></td>
+                                                        <td class="px-4 py-2 text-center">
+                                                            <span x-show="item['负贡献'] === '是'" class="px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs">负贡献</span>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <script>
+        function npsApp() {
+            return {
+                // 状态
+                dragover: false,
+                uploading: false,
+                message: '',
+                success: false,
+                dataLoaded: false,
+                npsTarget: 60,
+                overallNps: 0,
+                suppliers: [],
+                overallData: [],
+                
+                // Tab状态
+                activeTab: 'overall',
+                supplierTab: 'followup',
+                selectedSupplier: '',
+                supplierData: null,
+                
+                // 图表实例
+                dateChart: null,
+
+                handleDrop(e) {
+                    this.dragover = false;
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        this.uploadFile(files[0]);
+                    }
+                },
+
+                handleFileSelect(e) {
+                    const files = e.target.files;
+                    if (files.length > 0) {
+                        this.uploadFile(files[0]);
+                    }
+                },
+
+                async uploadFile(file) {
+                    this.uploading = true;
+                    this.message = '';
+                    
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('nps_target', this.npsTarget);
+
+                    try {
+                        const res = await fetch('/upload', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await res.json();
+                        
+                        this.success = data.success;
+                        this.message = data.message;
+                        
+                        if (data.success) {
+                            this.overallNps = data.overall_nps;
+                            this.suppliers = data.suppliers;
+                            this.dataLoaded = true;
+                            await this.loadOverallData();
+                        }
+                    } catch (err) {
+                        this.success = false;
+                        this.message = '上传失败: ' + err.message;
+                    } finally {
+                        this.uploading = false;
+                    }
+                },
+
+                async updateTarget() {
+                    if (!this.dataLoaded) return;
+                    
+                    await fetch('/api/set_target', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({target: this.npsTarget})
+                    });
+                    await this.loadOverallData();
+                },
+
+                async loadOverallData() {
+                    const res = await fetch('/api/overall');
+                    const data = await res.json();
+                    if (data.success) {
+                        this.overallData = data.data;
+                        this.overallNps = data.overall_nps;
+                    }
+                },
+
+                selectSupplier(id) {
+                    this.selectedSupplier = id;
+                    this.activeTab = 'supplier';
+                    this.loadSupplierData();
+                },
+
+                async loadSupplierData() {
+                    if (!this.selectedSupplier) {
+                        this.supplierData = null;
+                        return;
+                    }
+                    
+                    const res = await fetch(`/api/supplier/${this.selectedSupplier}`);
+                    const data = await res.json();
+                    if (data.success) {
+                        this.supplierData = data;
+                        this.$nextTick(() => this.renderDateChart());
+                    }
+                },
+
+                renderDateChart() {
+                    const canvas = document.getElementById('dateChart');
+                    if (!canvas || !this.supplierData?.date_dimension?.length) return;
+                    
+                    if (this.dateChart) {
+                        this.dateChart.destroy();
+                    }
+                    
+                    const labels = this.supplierData.date_dimension.map(d => d['日期']);
+                    const dailyNps = this.supplierData.date_dimension.map(d => d['当日NPS']);
+                    const cumulativeNps = this.supplierData.date_dimension.map(d => d['累计NPS']);
+                    
+                    this.dateChart = new Chart(canvas, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                {
+                                    label: '当日NPS',
+                                    data: dailyNps,
+                                    borderColor: '#3b82f6',
+                                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                    tension: 0.3
+                                },
+                                {
+                                    label: '累计NPS',
+                                    data: cumulativeNps,
+                                    borderColor: '#10b981',
+                                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                    tension: 0.3
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { position: 'top' }
+                            },
+                            scales: {
+                                y: { beginAtZero: false }
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    </script>
+</body>
+</html>
